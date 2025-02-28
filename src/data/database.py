@@ -189,6 +189,21 @@ class Database:
         result = self.cursor.fetchone()
         return result[0] if result else None
     
+    def get_match_data(self, match_id):
+        """Get match data including team IDs"""
+        self.cursor.execute('''
+            SELECT home_team_id, away_team_id
+            FROM matches
+            WHERE id = ?
+        ''', (match_id,))
+        result = self.cursor.fetchone()
+        if result:
+            return {
+                'home_team_id': result[0],
+                'away_team_id': result[1]
+            }
+        return None
+    
     def close(self):
         """Close database connection"""
         self.conn.close() 
