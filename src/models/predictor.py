@@ -136,23 +136,17 @@ class MatchPredictor:
                 self.logger.error("No training data available")
                 return False
             
-            # Split data
-            X_train, X_test, y_outcome_train, y_outcome_test, y_score_train, y_score_test = train_test_split(
-                X, y_outcome, y_score, test_size=0.2, random_state=42
-            )
-            
-            # Scale features
-            X_train_scaled = self.scaler.fit_transform(X_train)
-            X_test_scaled = self.scaler.transform(X_test)
+            # Split and scale data
+            X_train, X_test, y_outcome_train, y_outcome_test, y_score_train, y_score_test = self.split_and_scale_data(X, y_outcome, y_score)
             
             # Train outcome model
-            self.outcome_model.fit(X_train_scaled, y_outcome_train)
-            outcome_pred = self.outcome_model.predict(X_test_scaled)
+            self.outcome_model.fit(X_train, y_outcome_train)
+            outcome_pred = self.outcome_model.predict(X_test)
             outcome_accuracy = accuracy_score(y_outcome_test, outcome_pred)
             
             # Train score model
-            self.score_model.fit(X_train_scaled, y_score_train)
-            score_pred = self.score_model.predict(X_test_scaled)
+            self.score_model.fit(X_train, y_score_train)
+            score_pred = self.score_model.predict(X_test)
             score_mse = mean_squared_error(y_score_test, score_pred)
             
             self.logger.info(f"Model training completed:")
@@ -166,6 +160,19 @@ class MatchPredictor:
         except Exception as e:
             self.logger.error(f"Error training models: {str(e)}")
             return False
+    
+    def split_and_scale_data(self, X, y_outcome, y_score):
+        """Split and scale the training data"""
+        # Split data
+        X_train, X_test, y_outcome_train, y_outcome_test, y_score_train, y_score_test = train_test_split(
+            X, y_outcome, y_score, test_size=0.2, random_state=42
+        )
+        
+        # Scale features
+        X_train_scaled = self.scaler.fit_transform(X_train)
+        X_test_scaled = self.scaler.transform(X_test)
+        
+        return X_train_scaled, X_test_scaled, y_outcome_train, y_outcome_test, y_score_train, y_score_test
     
     def predict_match(self, home_team_id, away_team_id):
         """Predict the outcome and score of a match"""
