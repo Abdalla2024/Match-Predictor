@@ -1,7 +1,7 @@
-from ..data.database import Database
-from ..data.scraper import SoccerDataScraper
 import logging
 import sys
+from ..data.collector import FootballDataCollector
+from ..data.config import FOOTBALL_DATA_API_KEY
 
 def setup_logging():
     """Configure logging for the initialization script"""
@@ -20,48 +20,26 @@ def main():
     logger = setup_logging()
     logger.info("Starting database initialization and data collection")
     
+    if not FOOTBALL_DATA_API_KEY:
+        logger.error("No API key found. Please set FOOTBALL_DATA_API_KEY in .env file")
+        sys.exit(1)
+    
     try:
-        # Initialize database
-        db = Database()
-        logger.info("Database initialized successfully")
+        # Initialize collector
+        collector = FootballDataCollector()
+        logger.info("Collector initialized successfully")
         
-        # Initialize scraper
-        scraper = SoccerDataScraper()
-        logger.info("Scraper initialized successfully")
+        # Define seasons to collect (last 3 seasons)
+        seasons = [2023, 2022, 2021]  # Season format: YYYY
         
-        # Define leagues to scrape
-        # Format: (league_id, league_name, country)
-        leagues = [
-            (47, "Premier League", "England"),
-            (87, "La Liga", "Spain"),
-            (54, "Bundesliga", "Germany"),
-            (55, "Serie A", "Italy"),
-            (53, "Ligue 1", "France")
-        ]
-        
-        # Define seasons to scrape (last 3 seasons)
-        seasons = ["2023/24", "2022/23", "2021/22"]
-        
-        # Scrape data for each league
-        for league_id, league_name, country in leagues:
-            logger.info(f"Starting data collection for {league_name}")
-            
-            try:
-                # Scrape league data
-                scraper.scrape_league_data(league_id, seasons)
-                logger.info(f"Completed data collection for {league_name}")
-                
-            except Exception as e:
-                logger.error(f"Error collecting data for {league_name}: {str(e)}")
-                continue
-        
-        logger.info("Data collection completed successfully")
+        # Start data collection
+        collector.collect_data(seasons)
         
     except Exception as e:
         logger.error(f"Error during initialization: {str(e)}")
         sys.exit(1)
     finally:
-        scraper.close()
+        collector.close()
         logger.info("Resources cleaned up")
 
 if __name__ == "__main__":
