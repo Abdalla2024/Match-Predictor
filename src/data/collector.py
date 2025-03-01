@@ -1,17 +1,25 @@
-"""Data collector using football-data.org API."""
+"""Data collector using API-Football."""
 
 import requests
 import logging
 from datetime import datetime
 from time import sleep
-from .config import FOOTBALL_DATA_BASE_URL, API_HEADERS, COMPETITIONS
+from .config import API_BASE_URL, API_HEADERS, COMPETITIONS
 from .database import Database
 
-class FootballDataCollector:
+class APIFootballCollector:
     def __init__(self):
         """Initialize the collector with necessary configurations"""
         self.db = Database()
         self.setup_logging()
+        self.requests_remaining = 100  # Start with max limit
+        self.requests_made = 0
+        
+        # Get actual remaining requests from API
+        status = self.fetch_data('status')
+        if status and status.get('response', {}).get('requests'):
+            self.requests_remaining = status['response']['requests']['current']
+            self.logger.info(f"API Status: {self.requests_remaining} requests remaining today")
     
     def setup_logging(self):
         """Set up logging configuration"""
@@ -27,177 +35,181 @@ class FootballDataCollector:
     
     def fetch_data(self, endpoint, params=None):
         """Make API request with rate limiting and error handling"""
+        if self.requests_remaining <= 0:
+            self.logger.warning("Daily request limit reached")
+            return None
+            
         try:
-            url = f"{FOOTBALL_DATA_BASE_URL}/{endpoint}"
+            url = f"{API_BASE_URL}/{endpoint}"
             response = requests.get(url, headers=API_HEADERS, params=params)
             
-            if response.status_code == 429:  # Too Many Requests
-                retry_after = int(response.headers.get('Retry-After', 60))
-                self.logger.warning(f"Rate limit hit. Waiting {retry_after} seconds...")
-                sleep(retry_after)
-                return self.fetch_data(endpoint, params)
+            # Update request counts from response headers
+            self.requests_made += 1
+            remaining = response.headers.get('x-ratelimit-remaining')
+            if remaining is not None:
+                self.requests_remaining = int(remaining)
+            self.logger.info(f"Request {self.requests_made}: {self.requests_remaining} remaining today")
             
             response.raise_for_status()
             return response.json()
             
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching data from {endpoint}: {str(e)}")
+            if hasattr(e.response, 'text'):
+                self.logger.error(f"Response Text: {e.response.text}")
             return None
-    
-    def collect_team_data(self, competition_id):
-        """Collect team data for a competition"""
-        teams_data = self.fetch_data(f'competitions/{competition_id}/teams')
-        if not teams_data:
-            return
-        
-        for team in teams_data.get('teams', []):
-            try:
-                team_id = self.db.insert_team(
-                    name=team['name'],
-                    league=teams_data['competition']['name'],
-                    country=team.get('area', {}).get('name', 'Unknown')
-                )
-                
-                # Store players
-                for squad_member in team.get('squad', []):
-                    self.db.insert_player(
-                        name=squad_member['name'],
-                        team_id=team_id,
-                        position=squad_member.get('position'),
-                        nationality=squad_member.get('nationality')
-                    )
-                
-            except Exception as e:
-                self.logger.error(f"Error storing team {team['name']}: {str(e)}")
-    
-    def collect_match_data(self, competition_id, season):
-        """Collect match data for a competition and season"""
-        matches_data = self.fetch_data('matches', {
-            'competitionId': competition_id,
-            'season': season,
-            'status': 'FINISHED'
+
+    def collect_team_data(self, league_id, season):
+        """Collect team data for a league and season"""
+        teams_data = self.fetch_data('teams', {
+            'league': league_id,
+            'season': season
         })
         
-        if not matches_data:
+        if not teams_data or not teams_data.get('response'):
             return
         
-        competition_info = self.fetch_data(f'competitions/{competition_id}')
-        if not competition_info:
-            self.logger.error(f"Could not fetch competition info for ID {competition_id}")
-            return
-            
-        competition_country = competition_info.get('area', {}).get('name', 'Unknown')
-        competition_name = competition_info.get('name', 'Unknown')
-        
-        for match in matches_data.get('matches', []):
+        for team in teams_data['response']:
             try:
-                # Get team IDs (create if not exists)
+                team_info = team['team']
+                venue_info = team['venue']
+                
+                team_id = self.db.insert_team(
+                    name=team_info['name'],
+                    league=str(league_id),  # We'll update this with league name later
+                    country=venue_info.get('country', 'Unknown')
+                )
+                
+                self.logger.info(f"Stored team: {team_info['name']}")
+                
+            except Exception as e:
+                self.logger.error(f"Error storing team {team_info['name']}: {str(e)}")
+    
+    def collect_match_data(self, league_id, season):
+        """Collect match data for a league and season"""
+        matches_data = self.fetch_data('fixtures', {
+            'league': league_id,
+            'season': season,
+            'status': 'FT'  # Only finished matches
+        })
+        
+        if not matches_data or not matches_data.get('response'):
+            return
+        
+        total_matches = len(matches_data['response'])
+        self.logger.info(f"Found {total_matches} matches for league {league_id} season {season}")
+        
+        for match in matches_data['response']:
+            try:
+                fixture = match['fixture']
+                teams = match['teams']
+                goals = match['goals']
+                score = match['score']
+                league = match['league']
+                
+                # Get or create team IDs
                 home_team_id = self.db.insert_team(
-                    name=match['homeTeam']['name'],
-                    league=competition_name,
-                    country=competition_country
+                    name=teams['home']['name'],
+                    league=league['name'],
+                    country=league['country']
                 )
                 away_team_id = self.db.insert_team(
-                    name=match['awayTeam']['name'],
-                    league=competition_name,
-                    country=competition_country
+                    name=teams['away']['name'],
+                    league=league['name'],
+                    country=league['country']
                 )
                 
-                # Store match
-                match_date = datetime.strptime(match['utcDate'], '%Y-%m-%dT%H:%M:%SZ')
-                score = match.get('score', {}).get('fullTime', {})
-                home_score = score.get('home', 0) if score.get('home') is not None else 0
-                away_score = score.get('away', 0) if score.get('away') is not None else 0
+                # Parse match date
+                match_date = datetime.fromtimestamp(fixture['timestamp'])
                 
+                # Store match
                 match_id = self.db.insert_match(
                     home_team_id=home_team_id,
                     away_team_id=away_team_id,
-                    home_score=home_score,
-                    away_score=away_score,
+                    home_score=goals['home'],
+                    away_score=goals['away'],
                     date=match_date,
-                    competition=competition_name,
-                    season=str(season)
+                    competition=league['name'],
+                    season=str(season),
+                    api_fixture_id=fixture['id']  # Store API fixture ID for later statistics collection
                 )
                 
-                # Collect detailed match statistics
-                self.collect_match_statistics(match_id, match['id'])
+                self.logger.info(f"Stored match: {teams['home']['name']} vs {teams['away']['name']}")
                 
             except Exception as e:
-                self.logger.error(f"Error storing match {match.get('id', 'unknown')}: {str(e)}")
-                continue
+                self.logger.error(f"Error storing match {fixture['id']}: {str(e)}")
     
-    def collect_match_statistics(self, db_match_id, api_match_id):
-        """Collect detailed statistics for a match"""
-        match_stats = self.fetch_data(f'matches/{api_match_id}')
-        if not match_stats:
-            return
+    def collect_match_statistics(self, db_match_id, fixture_id):
+        """Collect statistics for a specific match"""
+        stats_data = self.fetch_data('fixtures/statistics', {
+            'fixture': fixture_id
+        })
         
-        try:
-            # Store home team stats
-            home_stats = match_stats.get('homeTeam', {}).get('statistics', {})
-            if home_stats:
+        if not stats_data or not stats_data.get('response'):
+            return
+            
+        for team_stats in stats_data['response']:
+            try:
+                team_id = self.db.get_team_id(team_stats['team']['name'])
+                stats = {stat['type']: stat['value'] for stat in team_stats['statistics']}
+                
                 self.db.insert_team_stats(
-                    team_id=self.db.get_team_id(match_stats['homeTeam']['name']),
+                    team_id=team_id,
                     match_id=db_match_id,
-                    possession=float(home_stats.get('possession', 0)) / 100,
-                    shots=home_stats.get('shots', 0),
-                    shots_on_target=home_stats.get('shotsOnGoal', 0),
-                    corners=home_stats.get('corners', 0),
-                    fouls=home_stats.get('fouls', 0)
+                    possession=float(stats.get('Ball Possession', '0%').rstrip('%')) / 100,
+                    shots=stats.get('Total Shots', 0),
+                    shots_on_target=stats.get('Shots on Goal', 0),
+                    corners=stats.get('Corner Kicks', 0),
+                    fouls=stats.get('Fouls', 0)
                 )
-            
-            # Store away team stats
-            away_stats = match_stats.get('awayTeam', {}).get('statistics', {})
-            if away_stats:
-                self.db.insert_team_stats(
-                    team_id=self.db.get_team_id(match_stats['awayTeam']['name']),
-                    match_id=db_match_id,
-                    possession=float(away_stats.get('possession', 0)) / 100,
-                    shots=away_stats.get('shots', 0),
-                    shots_on_target=away_stats.get('shotsOnGoal', 0),
-                    corners=away_stats.get('corners', 0),
-                    fouls=away_stats.get('fouls', 0)
-                )
-            
-            # Store player statistics and events
-            for goal in match_stats.get('goals', []):
-                player_id = self.db.get_player_id(goal['scorer']['name'], 
-                    self.db.get_team_id(goal['team']['name']))
-                if player_id:
-                    self.db.insert_match_event(
-                        match_id=db_match_id,
-                        player_id=player_id,
-                        event_type='GOAL',
-                        minute=goal['minute']
-                    )
-            
-        except Exception as e:
-            self.logger.error(f"Error storing match statistics for match {db_match_id}: {str(e)}")
+                
+            except Exception as e:
+                self.logger.error(f"Error storing match statistics for match {db_match_id}: {str(e)}")
     
-    def collect_data(self, seasons):
-        """Collect data for all competitions and specified seasons"""
+    def collect_season_data(self, season=2023, include_stats=False):
+        """Collect all data for a specific season"""
         try:
-            for competition_code, competition_id in COMPETITIONS.items():
-                self.logger.info(f"Collecting data for {competition_code}")
+            for league_code, league_id in COMPETITIONS.items():
+                self.logger.info(f"Collecting {league_code} data for season {season}")
                 
-                # Collect team and player data
-                self.collect_team_data(competition_id)
+                # Collect team data
+                self.collect_team_data(league_id, season)
                 
-                # Collect match data for each season
-                for season in seasons:
-                    self.logger.info(f"Collecting {competition_code} matches for season {season}")
-                    self.collect_match_data(competition_id, season)
-                    sleep(6)  # Rate limiting - max 10 calls per minute
+                # Collect match data
+                self.collect_match_data(league_id, season)
                 
-                self.logger.info(f"Completed data collection for {competition_code}")
-                sleep(10)  # Additional delay between competitions
-            
-            self.logger.info("Data collection completed successfully")
-            
+                # Only collect statistics if specifically requested
+                if include_stats and self.requests_remaining > 0:
+                    self.collect_season_statistics(league_code, season)
+                
+                self.logger.info(f"Completed data collection for {league_code}")
+                
+                # Break if we've hit the rate limit
+                if self.requests_remaining <= 0:
+                    self.logger.warning("Stopping data collection due to rate limit")
+                    break
+                
         except Exception as e:
-            self.logger.error(f"Error during data collection: {str(e)}")
+            self.logger.error(f"Error during season data collection: {str(e)}")
         finally:
             self.db.close()
+            self.logger.info(f"Data collection completed. Made {self.requests_made} requests.")
+    
+    def collect_season_statistics(self, league_code, season):
+        """Collect statistics for all matches in a season that don't have statistics yet"""
+        try:
+            # Get matches without statistics
+            matches = self.db.get_matches_without_statistics(league_code, season)
+            
+            for match_id, fixture_id in matches:
+                if self.requests_remaining <= 0:
+                    self.logger.warning("Stopping statistics collection due to rate limit")
+                    break
+                    
+                self.collect_match_statistics(match_id, fixture_id)
+                
+        except Exception as e:
+            self.logger.error(f"Error collecting season statistics: {str(e)}")
     
     def close(self):
         """Clean up resources"""
