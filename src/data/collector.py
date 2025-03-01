@@ -55,7 +55,7 @@ class FootballDataCollector:
                 team_id = self.db.insert_team(
                     name=team['name'],
                     league=teams_data['competition']['name'],
-                    country=team['area']['name']
+                    country=team.get('area', {}).get('name', 'Unknown')
                 )
                 
                 # Store players
@@ -81,29 +81,41 @@ class FootballDataCollector:
         if not matches_data:
             return
         
+        competition_info = self.fetch_data(f'competitions/{competition_id}')
+        if not competition_info:
+            self.logger.error(f"Could not fetch competition info for ID {competition_id}")
+            return
+            
+        competition_country = competition_info.get('area', {}).get('name', 'Unknown')
+        competition_name = competition_info.get('name', 'Unknown')
+        
         for match in matches_data.get('matches', []):
             try:
                 # Get team IDs (create if not exists)
                 home_team_id = self.db.insert_team(
                     name=match['homeTeam']['name'],
-                    league=match['competition']['name'],
-                    country=match['competition']['area']['name']
+                    league=competition_name,
+                    country=competition_country
                 )
                 away_team_id = self.db.insert_team(
                     name=match['awayTeam']['name'],
-                    league=match['competition']['name'],
-                    country=match['competition']['area']['name']
+                    league=competition_name,
+                    country=competition_country
                 )
                 
                 # Store match
                 match_date = datetime.strptime(match['utcDate'], '%Y-%m-%dT%H:%M:%SZ')
+                score = match.get('score', {}).get('fullTime', {})
+                home_score = score.get('home', 0) if score.get('home') is not None else 0
+                away_score = score.get('away', 0) if score.get('away') is not None else 0
+                
                 match_id = self.db.insert_match(
                     home_team_id=home_team_id,
                     away_team_id=away_team_id,
-                    home_score=match['score']['fullTime']['home'],
-                    away_score=match['score']['fullTime']['away'],
+                    home_score=home_score,
+                    away_score=away_score,
                     date=match_date,
-                    competition=match['competition']['name'],
+                    competition=competition_name,
                     season=str(season)
                 )
                 
@@ -111,7 +123,8 @@ class FootballDataCollector:
                 self.collect_match_statistics(match_id, match['id'])
                 
             except Exception as e:
-                self.logger.error(f"Error storing match {match['id']}: {str(e)}")
+                self.logger.error(f"Error storing match {match.get('id', 'unknown')}: {str(e)}")
+                continue
     
     def collect_match_statistics(self, db_match_id, api_match_id):
         """Collect detailed statistics for a match"""
