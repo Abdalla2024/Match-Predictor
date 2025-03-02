@@ -1,6 +1,7 @@
 """Script to collect match statistics for the 2023 season."""
 
 import logging
+import json
 from src.data.collector import APIFootballCollector
 
 def main():
@@ -17,6 +18,11 @@ def main():
         
         # Initialize collector
         collector = APIFootballCollector()
+        
+        # Get and log the full API status response
+        status = collector.fetch_data('status')
+        logger.info(f"Full API Status Response: {json.dumps(status, indent=2)}")
+        
         logger.info(f"Collector initialized successfully. {collector.requests_remaining} requests remaining")
         
         # Continue with Premier League first since we already started it

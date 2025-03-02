@@ -2,6 +2,7 @@
 
 import requests
 import logging
+import json
 from datetime import datetime
 from time import sleep
 from .config import API_BASE_URL, API_HEADERS, COMPETITIONS
@@ -15,11 +16,22 @@ class APIFootballCollector:
         self.requests_remaining = 100  # Start with max limit
         self.requests_made = 0
         
+        # Log API configuration (without the actual key)
+        self.logger.info(f"API Base URL: {API_BASE_URL}")
+        self.logger.info(f"API Host: {API_HEADERS.get('x-rapidapi-host')}")
+        self.logger.info("Checking API key length: " + str(len(API_HEADERS.get('x-rapidapi-key', ''))))
+        
         # Get actual remaining requests from API
         status = self.fetch_data('status')
-        if status and status.get('response', {}).get('requests'):
-            self.requests_remaining = status['response']['requests']['current']
-            self.logger.info(f"API Status: {self.requests_remaining} requests remaining today")
+        if status:
+            self.logger.info(f"Full API Status Response: {json.dumps(status, indent=2)}")
+            if status.get('response', {}).get('requests'):
+                self.requests_remaining = status['response']['requests']['limit_day']
+                self.logger.info(f"API Status: {self.requests_remaining} requests remaining today")
+            else:
+                self.logger.error(f"Unexpected API response structure: {status}")
+        else:
+            self.logger.error("Failed to get API status")
     
     def setup_logging(self):
         """Set up logging configuration"""
@@ -41,21 +53,26 @@ class APIFootballCollector:
             
         try:
             url = f"{API_BASE_URL}/{endpoint}"
+            self.logger.info(f"Making request to: {url}")
             response = requests.get(url, headers=API_HEADERS, params=params)
+            
+            # Log response details for debugging
+            self.logger.info(f"Response Status Code: {response.status_code}")
             
             # Update request counts from response headers
             self.requests_made += 1
-            remaining = response.headers.get('x-ratelimit-remaining')
+            remaining = response.headers.get('x-ratelimit-requests-remaining')
             if remaining is not None:
                 self.requests_remaining = int(remaining)
-            self.logger.info(f"Request {self.requests_made}: {self.requests_remaining} remaining today")
+                self.logger.info(f"Request {self.requests_made}: {self.requests_remaining} requests remaining today")
             
             response.raise_for_status()
             return response.json()
             
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching data from {endpoint}: {str(e)}")
-            if hasattr(e.response, 'text'):
+            if hasattr(e, 'response') and e.response is not None:
+                self.logger.error(f"Response Status Code: {e.response.status_code}")
                 self.logger.error(f"Response Text: {e.response.text}")
             return None
 
@@ -166,7 +183,7 @@ class APIFootballCollector:
             except Exception as e:
                 self.logger.error(f"Error storing match statistics for match {db_match_id}: {str(e)}")
     
-    def collect_season_data(self, season=2023, include_stats=False):
+    def collect_season_data(self, season=2023, include_stats=False, max_requests=None):
         """Collect all data for a specific season"""
         try:
             for league_code, league_id in COMPETITIONS.items():
@@ -180,7 +197,9 @@ class APIFootballCollector:
                 
                 # Only collect statistics if specifically requested
                 if include_stats and self.requests_remaining > 0:
-                    self.collect_season_statistics(league_code, season)
+                    self.collect_season_statistics(league_code, season, max_requests)
+                    if max_requests and self.requests_made >= max_requests:
+                        break
                 
                 self.logger.info(f"Completed data collection for {league_code}")
                 
@@ -195,18 +214,25 @@ class APIFootballCollector:
             self.db.close()
             self.logger.info(f"Data collection completed. Made {self.requests_made} requests.")
     
-    def collect_season_statistics(self, league_code, season):
+    def collect_season_statistics(self, league_code, season, max_requests=None):
         """Collect statistics for all matches in a season that don't have statistics yet"""
         try:
             # Get matches without statistics
             matches = self.db.get_matches_without_statistics(league_code, season)
+            initial_requests = self.requests_made
             
             for match_id, fixture_id in matches:
                 if self.requests_remaining <= 0:
                     self.logger.warning("Stopping statistics collection due to rate limit")
                     break
+                
+                if max_requests and (self.requests_made - initial_requests) >= max_requests:
+                    self.logger.info(f"Stopping after using {max_requests} requests as requested")
+                    break
                     
                 self.collect_match_statistics(match_id, fixture_id)
+                
+            self.logger.info(f"After {league_code}: {self.requests_remaining} requests remaining")
                 
         except Exception as e:
             self.logger.error(f"Error collecting season statistics: {str(e)}")
