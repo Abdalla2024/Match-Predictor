@@ -13,7 +13,7 @@ class APIFootballCollector:
         """Initialize the collector with necessary configurations"""
         self.db = Database()
         self.setup_logging()
-        self.requests_remaining = 100  # Start with max limit
+        self.requests_remaining = 1000  # Start with higher limit
         self.requests_made = 0
         
         # Log API configuration (without the actual key)

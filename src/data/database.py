@@ -74,7 +74,7 @@ class Database:
         """Insert a match and return its ID."""
         try:
             self.cursor.execute('''
-                INSERT INTO matches (
+                INSERT OR IGNORE INTO matches (
                     home_team_id, away_team_id, home_score, away_score,
                     date, competition, season, api_fixture_id
                 )
@@ -84,7 +84,13 @@ class Database:
                 date, competition, season, api_fixture_id
             ))
             self.conn.commit()
-            return self.cursor.lastrowid
+            
+            # Get the match ID (whether it was just inserted or already existed)
+            self.cursor.execute('''
+                SELECT id FROM matches 
+                WHERE home_team_id = ? AND away_team_id = ? AND date = ?
+            ''', (home_team_id, away_team_id, date))
+            return self.cursor.fetchone()[0]
             
         except sqlite3.Error as e:
             logging.error(f"Database error inserting match: {str(e)}")
