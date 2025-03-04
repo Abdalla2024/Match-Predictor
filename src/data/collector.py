@@ -7,6 +7,7 @@ from datetime import datetime
 from time import sleep
 from .config import API_BASE_URL, API_HEADERS, COMPETITIONS
 from .database import Database
+import time
 
 class APIFootballCollector:
     def __init__(self):
@@ -46,34 +47,36 @@ class APIFootballCollector:
         self.logger = logging.getLogger(__name__)
     
     def fetch_data(self, endpoint, params=None):
-        """Make API request with rate limiting and error handling"""
+        """Fetch data from the API with rate limiting."""
         if self.requests_remaining <= 0:
-            self.logger.warning("Daily request limit reached")
+            self.logger.warning("No requests remaining")
             return None
             
+        url = f"{API_BASE_URL}/{endpoint}"
+        headers = {
+            'x-rapidapi-host': API_HEADERS.get('x-rapidapi-host'),
+            'x-rapidapi-key': API_HEADERS.get('x-rapidapi-key')
+        }
+        
         try:
-            url = f"{API_BASE_URL}/{endpoint}"
-            self.logger.info(f"Making request to: {url}")
-            response = requests.get(url, headers=API_HEADERS, params=params)
-            
-            # Log response details for debugging
-            self.logger.info(f"Response Status Code: {response.status_code}")
-            
-            # Update request counts from response headers
+            response = requests.get(url, headers=headers, params=params)
             self.requests_made += 1
-            remaining = response.headers.get('x-ratelimit-requests-remaining')
-            if remaining is not None:
-                self.requests_remaining = int(remaining)
-                self.logger.info(f"Request {self.requests_made}: {self.requests_remaining} requests remaining today")
+            self.requests_remaining = int(response.headers.get('x-ratelimit-requests-remaining', 0))
             
-            response.raise_for_status()
-            return response.json()
+            self.logger.info(f"Response Status Code: {response.status_code}")
+            self.logger.info(f"Request {self.requests_made}: {self.requests_remaining} requests remaining")
             
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Error fetching data from {endpoint}: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None:
-                self.logger.error(f"Response Status Code: {e.response.status_code}")
-                self.logger.error(f"Response Text: {e.response.text}")
+            if response.status_code == 200:
+                data = response.json()
+                # Add a delay to respect rate limit (10 requests per minute)
+                time.sleep(6)  # Wait 6 seconds between requests
+                return data
+            else:
+                self.logger.error(f"API request failed with status code {response.status_code}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error making API request: {str(e)}")
             return None
 
     def collect_team_data(self, league_id, season):

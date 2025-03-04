@@ -34,7 +34,8 @@ class Database:
                 season TEXT,
                 api_fixture_id INTEGER,
                 FOREIGN KEY (home_team_id) REFERENCES teams (id),
-                FOREIGN KEY (away_team_id) REFERENCES teams (id)
+                FOREIGN KEY (away_team_id) REFERENCES teams (id),
+                UNIQUE(home_team_id, away_team_id, date)
             );
             
             CREATE TABLE IF NOT EXISTS team_stats (
