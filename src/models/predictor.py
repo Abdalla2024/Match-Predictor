@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
 from sklearn.metrics import accuracy_score, mean_squared_error, classification_report
 import logging
-from ..data.database import Database
+from src.data.database import Database
 
 class MatchPredictor:
     def __init__(self):
